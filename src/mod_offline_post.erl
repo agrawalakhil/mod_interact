@@ -63,21 +63,45 @@ send_notice(From, To, Packet) ->
     Body = xml:get_path_s(Packet, [{elem, list_to_binary("body")}, cdata]),
     Token = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, auth_token, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
     PostUrl = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, post_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
-
-    if (Type == <<"chat">>) and (Body /= <<"">>) ->
-	      Sep = "&",
-        Post = [
-          "to=", To#jid.luser, Sep,
-          "from=", From#jid.luser, Sep,
-          "body=", url_encode(binary_to_list(Body)), Sep,
-          "access_token=", Token],
-        ?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
-        httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
-        ok;
-      true ->
-        ok
+    Format = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, body_format, fun(S) -> iolist_to_binary(S) end, iolist_to_binary("")),
+    OfflineMessageCount = get_queue_length(To#jid.luser, To#jid.lserver),
+    if (Type == <<"chat">>) and (Body /= <<"">>) ->	    	    
+	    Post = case Format of
+		       <<"post">> -> Sep = "&",
+				     ["to=", To#jid.luser, Sep,
+				      "from=", From#jid.luser, Sep,
+				      "body=", url_encode(binary_to_list(Body)), Sep,
+				      "access_token=", Token, Sep,
+				      "offline_message_count=", integer_to_list(OfflineMessageCount)];
+		       _ -> Data = [{"to", To#jid.luser},
+				    {"from", From#jid.luser},
+				    {"body", Body},
+				    {"access_token", Token},
+				    {"offline_message_count", OfflineMessageCount}],
+			    mochijson2:encode({struct, Data})
+		   end,
+	    ?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
+	    httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
+	    ok;
+       true -> ok
     end.
 
+%% Get number of offline messages for a user
+get_queue_length(LUser, LServer) ->    
+    get_queue_length(LUser, LServer, gen_mod:db_type(LServer, mod_offline)).
+get_queue_length(LUser, LServer, mnesia) ->    
+    length(mnesia:dirty_read({offline_msg, {LUser, LServer}}));
+get_queue_length(LUser, LServer, riak) ->
+    case ejabberd_riak:count_by_index(offline_msg, <<"us">>, {LUser, LServer}) of
+        {ok, N} -> N;
+        _ -> 0
+    end;
+get_queue_length(LUser, LServer, odbc) ->
+    Username = ejabberd_odbc:escape(LUser),
+    case catch ejabberd_odbc:sql_query(LServer, [<<"select count(*) from spool  where username='">>, Username, <<"';">>]) of
+	{selected, [_], [[SCount]]} -> jlib:binary_to_integer(SCount);
+	_ -> 0
+    end.
 
 %%% The following url encoding code is from the yaws project and retains it's original license.
 %%% https://github.com/klacke/yaws/blob/master/LICENSE

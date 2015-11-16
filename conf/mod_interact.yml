@@ -1,0 +1,5 @@
+modules:
+    mod_offline_post:
+        auth_token: "offline_post_auth_token"
+        post_url: "http://localhost:4567/offline_post"
+        body_format: "json"
