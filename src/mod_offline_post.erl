@@ -40,6 +40,7 @@
 -include("ejabberd.hrl").
 -include("jlib.hrl").
 -include("logger.hrl").
+-include("mod_offline.hrl").
 
 start(Host, Opts) ->
     ?INFO_MSG("Starting mod_offline_post", [] ),
@@ -64,8 +65,8 @@ send_notice(From, To, Packet) ->
     Token = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, auth_token, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
     PostUrl = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, post_url, fun(S) -> iolist_to_binary(S) end, list_to_binary("")),
     Format = gen_mod:get_module_opt(To#jid.lserver, ?MODULE, body_format, fun(S) -> iolist_to_binary(S) end, iolist_to_binary("")),
-    OfflineMessageCount = get_queue_length(To#jid.luser, To#jid.lserver),
     if (Type == <<"chat">>) and (Body /= <<"">>) ->	    	    
+	    OfflineMessageCount = get_queue_length(To#jid.luser, To#jid.lserver) + 1, %% add 1 for the current message
 	    Post = case Format of
 		       <<"post">> -> Sep = "&",
 				     ["to=", To#jid.luser, Sep,
@@ -75,7 +76,7 @@ send_notice(From, To, Packet) ->
 				      "offline_message_count=", integer_to_list(OfflineMessageCount)];
 		       _ -> Data = [{"to", To#jid.luser},
 				    {"from", From#jid.luser},
-				    {"body", Body},
+				    {"body", list_to_binary(url_encode(binary_to_list(Body)))},
 				    {"access_token", Token},
 				    {"offline_message_count", OfflineMessageCount}],
 			    mochijson2:encode({struct, Data})
@@ -87,10 +88,18 @@ send_notice(From, To, Packet) ->
     end.
 
 %% Get number of offline messages for a user
+filter_empty_body_chat(Packet) -> %% filter messages of type chat and empty body 
+    Type = xml:get_tag_attr_s(list_to_binary("type"), Packet),
+    Body = xml:get_path_s(Packet, [{elem, list_to_binary("body")}, cdata]),
+    if (Type == <<"chat">>) and (Body /= <<"">>) -> true;
+       true -> false
+    end.
 get_queue_length(LUser, LServer) ->    
     get_queue_length(LUser, LServer, gen_mod:db_type(LServer, mod_offline)).
 get_queue_length(LUser, LServer, mnesia) ->    
-    length(mnesia:dirty_read({offline_msg, {LUser, LServer}}));
+    length(lists:filter(fun(#offline_msg{packet=Packet}) -> 
+				filter_empty_body_chat(Packet)
+			end, mnesia:dirty_read({offline_msg, {LUser, LServer}})));
 get_queue_length(LUser, LServer, riak) ->
     case ejabberd_riak:count_by_index(offline_msg, <<"us">>, {LUser, LServer}) of
         {ok, N} -> N;
@@ -98,8 +107,12 @@ get_queue_length(LUser, LServer, riak) ->
     end;
 get_queue_length(LUser, LServer, odbc) ->
     Username = ejabberd_odbc:escape(LUser),
-    case catch ejabberd_odbc:sql_query(LServer, [<<"select count(*) from spool  where username='">>, Username, <<"';">>]) of
-	{selected, [_], [[SCount]]} -> jlib:binary_to_integer(SCount);
+    case catch ejabberd_odbc:sql_query(LServer, [<<"select xml from spool  where username='">>, Username, <<"';">>]) of
+	{selected, [_], XmlMessages} -> 
+	    length(lists:filter(fun([XmlMessageStr]) ->
+					XmlMessage = xml_stream:parse_element(XmlMessageStr),
+					filter_empty_body_chat(XmlMessage)
+				end, XmlMessages));
 	_ -> 0
     end.
 
