@@ -74,12 +74,11 @@ send_notice(From, To, Packet) ->
 				      "body=", url_encode(binary_to_list(Body)), Sep,
 				      "access_token=", Token, Sep,
 				      "offline_message_count=", integer_to_list(OfflineMessageCount)];
-		       _ -> Data = [{"to", To#jid.luser},
-				    {"from", From#jid.luser},
-				    {"body", list_to_binary(url_encode(binary_to_list(Body)))},
-				    {"access_token", Token},
-				    {"offline_message_count", OfflineMessageCount}],
-			    mochijson2:encode({struct, Data})
+		       _ -> "{\"to\": \"" ++ binary_to_list(To#jid.luser) ++ "\"," ++ 
+				"\"from\": \"" ++ binary_to_list(From#jid.luser) ++ "\"," ++ 
+				"\"body\": \"" ++ url_encode(binary_to_list(Body)) ++ "\"," ++
+				"\"access_token\": \"" ++ binary_to_list(Token) ++ "\"," ++
+				"\"offline_message_count\": " ++ integer_to_list(OfflineMessageCount) ++ "}"
 		   end,
 	    ?INFO_MSG("Sending post request to ~s with body \"~s\"", [PostUrl, Post]),
 	    httpc:request(post, {binary_to_list(PostUrl), [], "application/x-www-form-urlencoded", list_to_binary(Post)},[],[]),
